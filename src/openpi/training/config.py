@@ -558,6 +558,82 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    TrainConfig(
+        name="pi0_piper_finetune_put_the_yellow_mango_on_the_blue_plate",
+        model=pi0_config.Pi0Config(),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/home/vla/D-openpi/openpi/datasets/repo/put_the_yellow_mango_on_the_blue_plate_repo",
+            adapt_to_pi=False,
+            assets=AssetsConfig(
+                assets_dir="models/openpi/openpi-assets/checkpoints/pi0_base/assets",
+                asset_id="trossen",
+            ),
+            # default_prompt="put the box",
+            default_prompt="put the yellow mango on the blue plate",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("models/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        pytorch_weight_path="models/openpi_touch_models/pi0_base",
+        pytorch_training_precision = "bfloat16",
+        batch_size=4,
+        num_train_steps=50_000,
+        fsdp_devices=4,
+    ),
+    TrainConfig(
+        name="pi0_piper_lora_finetune_put_the_yellow_mango_on_the_blue_plate",
+        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/home/vla/D-openpi/openpi/datasets/repo/put_the_yellow_mango_on_the_blue_plate_repo",
+            adapt_to_pi=False,
+            assets=AssetsConfig(
+                assets_dir="models/openpi/openpi-assets/checkpoints/pi0_base/assets",
+                asset_id="trossen",
+            ),
+            default_prompt="put the yellow mango on the blue plate",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("models/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        pytorch_weight_path="models/openpi_touch_models/pi0_base",
+        pytorch_training_precision = "bfloat16",
+        batch_size=5,
+        num_train_steps=50_000,
+        fsdp_devices=5,
+        # LoRA specific settings
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+
     #
     # Inference Aloha configs.
     #

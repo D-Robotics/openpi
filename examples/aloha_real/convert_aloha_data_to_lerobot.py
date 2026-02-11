@@ -10,9 +10,7 @@ import shutil
 from typing import Literal
 
 import h5py
-from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw
 import numpy as np
 import torch
 import tqdm
@@ -109,8 +107,9 @@ def create_empty_dataset(
             ],
         }
 
-    if Path(LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
+    lerobot_home = Path.home() / ".lerobot"
+    if (lerobot_home / repo_id).exists():
+        shutil.rmtree(lerobot_home / repo_id)
 
     return LeRobotDataset.create(
         repo_id=repo_id,
@@ -127,7 +126,6 @@ def create_empty_dataset(
 
 def get_cameras(hdf5_files: list[Path]) -> list[str]:
     with h5py.File(hdf5_files[0], "r") as ep:
-        # ignore depth channel, not currently handled
         return [key for key in ep["/observations/images"].keys() if "depth" not in key]  # noqa: SIM118
 
 
@@ -147,12 +145,10 @@ def load_raw_images_per_camera(ep: h5py.File, cameras: list[str]) -> dict[str, n
         uncompressed = ep[f"/observations/images/{camera}"].ndim == 4
 
         if uncompressed:
-            # load all images in RAM
             imgs_array = ep[f"/observations/images/{camera}"][:]
         else:
             import cv2
 
-            # load one compressed image after the other in RAM and uncompress
             imgs_array = []
             for data in ep[f"/observations/images/{camera}"]:
                 imgs_array.append(cv2.cvtColor(cv2.imdecode(data, 1), cv2.COLOR_BGR2RGB))
@@ -219,9 +215,13 @@ def populate_dataset(
             if effort is not None:
                 frame["observation.effort"] = effort[i]
 
+            # ✅ 保持不变：添加 task 字段
+            frame["task"] = task  # 这一行是必须的
+
             dataset.add_frame(frame)
 
-        dataset.save_episode(task=task)
+        # ✅ 关键修复：移除 task 参数
+        dataset.save_episode()  # 不再需要 task 参数
 
     return dataset
 
@@ -230,21 +230,17 @@ def port_aloha(
     raw_dir: Path,
     repo_id: str,
     raw_repo_id: str | None = None,
-    task: str = "DEBUG",
+    task: str = "aloha",  # ✅ 建议默认值改为 "aloha"
     *,
     episodes: list[int] | None = None,
-    push_to_hub: bool = True,
+    push_to_hub: bool = False,
     is_mobile: bool = False,
     mode: Literal["video", "image"] = "image",
     dataset_config: DatasetConfig = DEFAULT_DATASET_CONFIG,
 ):
-    if (LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
-
-    if not raw_dir.exists():
-        if raw_repo_id is None:
-            raise ValueError("raw_repo_id must be provided if raw_dir does not exist")
-        download_raw(raw_dir, repo_id=raw_repo_id)
+    lerobot_home = Path.home() / ".lerobot"
+    if (lerobot_home / repo_id).exists():
+        shutil.rmtree(lerobot_home / repo_id)
 
     hdf5_files = sorted(raw_dir.glob("episode_*.hdf5"))
 
@@ -262,7 +258,7 @@ def port_aloha(
         task=task,
         episodes=episodes,
     )
-    dataset.consolidate()
+    # dataset.consolidate()
 
     if push_to_hub:
         dataset.push_to_hub()

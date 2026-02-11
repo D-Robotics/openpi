@@ -26,7 +26,9 @@ dependencies = [
     "orbax-checkpoint==0.11.13",
     "pillow>=11.0.0",
     "sentencepiece>=0.2.0",
-    "torch==2.7.1",
+    "torch>=2.9.0",
+    "torchvision>=0.24.0",
+    "torchaudio>=2.9.0",
     "tqdm-loggable>=0.2",
     "typing-extensions>=4.12.2",
     "tyro>=0.9.5",
@@ -41,7 +43,7 @@ dependencies = [
 
 
 [project.urls]
-Repository = "https://github.com/Physical-Intelligence/openpi"
+Repository = "https://github.com/Physical-Intelligence/openpi "
 
 [dependency-groups]
 dev = [
@@ -64,8 +66,16 @@ override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
 
 [tool.uv.sources]
 openpi-client = { workspace = true }
-lerobot = { git = "https://github.com/huggingface/lerobot", rev = "0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" }
-dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
+lerobot = { git = "https://github.com/huggingface/lerobot ", rev = "0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" }
+dlimp = { git = "https://github.com/kvablack/dlimp ", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -76,7 +86,7 @@ target-version = "py311"
 extend-exclude = ["docker", "third_party", "src/openpi/models_pytorch/transformers_replace/*"]
 
 [tool.ruff.lint]
-# https://docs.astral.sh/ruff/rules/
+# https://docs.astral.sh/ruff/rules/ 
 select = [
     "B",
     "C4",
