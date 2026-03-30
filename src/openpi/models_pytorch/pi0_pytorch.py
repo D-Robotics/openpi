@@ -12,7 +12,7 @@ import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 import os
 import numpy as np
 
-SAVE_NPY = True
+SAVE_NPY = False
 
 if SAVE_NPY:
     NPY_SAVE_DIR = "/personal/data/weiyang.hu/Data/pi05_libero_npy_data"
