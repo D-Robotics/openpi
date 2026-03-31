@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "serve_policy (LIBERO :9000)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/serve_policy.py",
+      "cwd": "${workspaceFolder}",
+      "args": ["--env", "LIBERO", "--port", "9000"],
+      "justMyCode": false,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "libero main (PYTHONPATH + --args.port 9000)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/examples/libero/main.py",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/examples/libero/.venv/bin/python",
+      "env": {
+        "PYTHONPATH": "${env:PYTHONPATH}:${workspaceFolder}/third_party/libero"
+      },
+      "args": ["--args.port", "9000"],
+      "justMyCode": false,
+      "console": "integratedTerminal"
+    }
+  ]
+}
+
