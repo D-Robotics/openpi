@@ -1,9 +1,9 @@
 """Libero evaluation using TCP+Protobuf protocol.
 
 Client-side preprocessing for inference server:
-  - Images: float32 CHW (3,224,224), resize_with_pad, values in [-1, 1].
-  - Prompt: int32 PaliGemma tokens, shape (max_token_len,), default (200,).
-  - State: z-score normalize 8-d libero state (norm_stats), pad to 32, float16, shape (10, 32).
+  - Images: float32 NCHW (1,3,224,224), resize_with_pad, values in [-1, 1].
+  - Prompt: int32 PaliGemma tokens, shape (1, max_token_len), default (1, 200).
+  - State: z-score normalize 8-d libero state (norm_stats), pad to 32, float32, shape (1, 32).
 
 Post-processing: optional action z-score unnormalize + slice to 7-D (--no-unnormalize-actions if server
 already returns physical actions).
@@ -44,14 +44,13 @@ LIBERO_ACTION_DIM = 7
 LIBERO_ACTION_HORIZON = 10
 LIBERO_STATE_RAW_DIM = 8
 MODEL_STATE_DIM = 32
-STATE_TIME_EXPAND = 10
 MAX_TOKEN_LEN_DEFAULT = 200
 IMAGE_SIZE_DEFAULT = 224
 
 DTYPES = {
     "images": msg_pb2.Tensor.FLOAT32,
     "prompt": msg_pb2.Tensor.INT32,
-    "state": msg_pb2.Tensor.FP16,
+    "state": msg_pb2.Tensor.FLOAT32,
 }
 
 
@@ -117,14 +116,14 @@ def _normalize_state_pad_32(raw8: np.ndarray, mean: np.ndarray, std: np.ndarray)
 
 
 def _state_tensor_for_server(normed32: np.ndarray) -> np.ndarray:
-    v = normed32.astype(np.float16).reshape(1, MODEL_STATE_DIM)
-    return np.broadcast_to(v, (STATE_TIME_EXPAND, MODEL_STATE_DIM)).copy()
+    return np.ascontiguousarray(normed32.astype(np.float32).reshape(1, MODEL_STATE_DIM))
 
 
 def _preprocess_image_server(raw_hwc_u8: np.ndarray, size: int) -> np.ndarray:
     x = image_tools.convert_to_uint8(image_tools.resize_with_pad(raw_hwc_u8, size, size))
     x = x.astype(np.float32) / 255.0 * 2.0 - 1.0
-    return np.ascontiguousarray(np.transpose(x, (2, 0, 1)))
+    chw = np.ascontiguousarray(np.transpose(x, (2, 0, 1)))
+    return np.expand_dims(chw, axis=0)
 
 
 def _preprocess_image_replay(raw_hwc_u8: np.ndarray, size: int) -> np.ndarray:
@@ -144,7 +143,7 @@ def _tokenize_prompt(
     toks = np.asarray(tokens, dtype=np.int32).reshape(-1)
     if toks.size != max_len:
         raise RuntimeError(f"Expected {max_len} tokens, got {toks.size}")
-    return toks
+    return toks.reshape(1, max_len)
 
 
 def _extract_raw_actions(result: dict) -> np.ndarray:
