@@ -3,10 +3,13 @@
 Client-side preprocessing for inference server:
   - Images: float32 NCHW (1,3,224,224), resize_with_pad, values in [-1, 1].
   - Prompt: int32 PaliGemma tokens, shape (1, max_token_len), default (1, 200).
-  - State: z-score normalize 8-d libero state (norm_stats), pad to 32, float32, shape (1, 32).
+  - State: matches openpi pi05 policy — by default quantile norm on 8-d state (q01/q99 -> ~[-1,1]),
+    then zero-pad to 32 (same as PadStatesAndActions), float32, shape (1, 32).
 
-Post-processing: optional action z-score unnormalize + slice to 7-D (--no-unnormalize-actions if server
-already returns physical actions).
+Post-processing: optional action unnormalize (quantile by default, same as openpi Unnormalize) + slice to 7-D.
+Use --no-use-quantile-norm for mean/std z-score (legacy). --no-unnormalize-actions if server returns physical actions.
+
+Openpi PadStatesAndActions: pad_to_dim(..., value=0.0) — padded state dimensions are zeros.
 """
 
 from __future__ import annotations
@@ -77,6 +80,7 @@ class Args:
     image_size: int = IMAGE_SIZE_DEFAULT
     max_token_len: int = MAX_TOKEN_LEN_DEFAULT
     discrete_state_in_prompt: bool = False
+    use_quantile_norm: bool = True
 
 
 def _quat2axisangle(quat):
@@ -98,18 +102,30 @@ def _build_raw_state_8(obs: dict) -> np.ndarray:
     )).astype(np.float64)
 
 
-def _load_state_norm_stats(path: str) -> tuple[np.ndarray, np.ndarray]:
+def _load_norm_stats_entry(path: str, key: str) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     with open(path, encoding="utf-8") as f:
-        data = json.load(f)["norm_stats"]["state"]
+        data = json.load(f)["norm_stats"][key]
     mean = np.asarray(data["mean"], dtype=np.float64).reshape(-1)
     std = np.asarray(data["std"], dtype=np.float64).reshape(-1)
-    return mean, std
+    q01 = np.asarray(data["q01"], dtype=np.float64).reshape(-1) if data.get("q01") is not None else None
+    q99 = np.asarray(data["q99"], dtype=np.float64).reshape(-1) if data.get("q99") is not None else None
+    return mean, std, q01, q99
 
 
-def _normalize_state_pad_32(raw8: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
+def _normalize_state_zscore_pad_32(raw8: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
     m = mean[:LIBERO_STATE_RAW_DIM]
     s = std[:LIBERO_STATE_RAW_DIM]
     normed = (raw8 - m) / (s + 1e-6)
+    out = np.zeros(MODEL_STATE_DIM, dtype=np.float32)
+    out[:LIBERO_STATE_RAW_DIM] = normed.astype(np.float32)
+    return out
+
+
+def _normalize_state_quantile_pad_32(raw8: np.ndarray, q01: np.ndarray, q99: np.ndarray) -> np.ndarray:
+    """openpi.transforms.Normalize._normalize_quantile on first 8 dims, then zero-pad to 32."""
+    q1 = q01[:LIBERO_STATE_RAW_DIM]
+    q9 = q99[:LIBERO_STATE_RAW_DIM]
+    normed = (raw8 - q1) / (q9 - q1 + 1e-6) * 2.0 - 1.0
     out = np.zeros(MODEL_STATE_DIM, dtype=np.float32)
     out[:LIBERO_STATE_RAW_DIM] = normed.astype(np.float32)
     return out
@@ -156,14 +172,6 @@ def _extract_raw_actions(result: dict) -> np.ndarray:
     raise RuntimeError(f"No action tensor in response. Keys: {list(result.keys())}")
 
 
-def _load_action_norm_stats(path: str) -> tuple[np.ndarray, np.ndarray]:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)["norm_stats"]["actions"]
-    mean = np.asarray(data["mean"], dtype=np.float64).reshape(-1)
-    std = np.asarray(data["std"], dtype=np.float64).reshape(-1)
-    return mean, std
-
-
 def _pad_stats_to_action_dim(mean: np.ndarray, std: np.ndarray, action_dim: int) -> tuple[np.ndarray, np.ndarray]:
     if mean.size < action_dim:
         mean = np.pad(mean, (0, action_dim - mean.size))
@@ -180,9 +188,36 @@ def _unnormalize_actions_zscore(x: np.ndarray, mean: np.ndarray, std: np.ndarray
     return x * (std + 1e-6) + mean
 
 
-def _postprocess_actions(raw: np.ndarray, mean: np.ndarray, std: np.ndarray, *, do_unnorm: bool) -> np.ndarray:
+def _unnormalize_actions_quantile(x: np.ndarray, q01: np.ndarray, q99: np.ndarray) -> np.ndarray:
+    """openpi.transforms.Unnormalize._unnormalize_quantile."""
+    q01 = np.asarray(q01, dtype=np.float64).reshape(-1)
+    q99 = np.asarray(q99, dtype=np.float64).reshape(-1)
+    dim = q01.shape[-1]
+    dlast = x.shape[-1]
+    if dim < dlast:
+        left = (x[..., :dim] + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01
+        right = x[..., dim:]
+        return np.concatenate([left, right], axis=-1)
+    return (x + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01
+
+
+def _postprocess_actions(
+    raw: np.ndarray,
+    *,
+    do_unnorm: bool,
+    use_quantile: bool,
+    action_mean: np.ndarray,
+    action_std: np.ndarray,
+    action_q01: np.ndarray | None,
+    action_q99: np.ndarray | None,
+) -> np.ndarray:
     if do_unnorm:
-        raw = _unnormalize_actions_zscore(raw, mean, std)
+        if use_quantile:
+            if action_q01 is None or action_q99 is None:
+                raise ValueError("norm_stats.actions missing q01/q99; cannot use quantile unnormalize")
+            raw = _unnormalize_actions_quantile(raw, action_q01, action_q99)
+        else:
+            raw = _unnormalize_actions_zscore(raw, action_mean, action_std)
     return raw[:, :LIBERO_ACTION_DIM]
 
 
@@ -214,13 +249,19 @@ def eval_libero(args: Args) -> None:
     stats_path = pathlib.Path(args.norm_stats_path)
     if not stats_path.is_file():
         raise FileNotFoundError(f"norm_stats not found: {stats_path.resolve()}")
-    state_mean, state_std = _load_state_norm_stats(str(stats_path))
-    logging.info(f"Loaded state norm_stats from {stats_path}")
+    state_mean, state_std, state_q01, state_q99 = _load_norm_stats_entry(str(stats_path), "state")
+    action_mean, action_std, action_q01, action_q99 = _load_norm_stats_entry(str(stats_path), "actions")
+    logging.info(f"Loaded norm_stats from {stats_path}")
+    if args.use_quantile_norm:
+        if state_q01 is None or state_q99 is None:
+            raise ValueError("norm_stats.state must include q01 and q99 for --use-quantile-norm (default)")
+        logging.info("State/action normalize: quantile (pi05-style)")
+    else:
+        logging.info("State/action normalize: z-score (mean/std)")
 
-    action_mean, action_std = (np.zeros(0), np.zeros(0))
-    if args.unnormalize_actions:
-        action_mean, action_std = _load_action_norm_stats(str(stats_path))
-        logging.info("Loaded action norm_stats for unnormalize")
+    if args.unnormalize_actions and args.use_quantile_norm:
+        if action_q01 is None or action_q99 is None:
+            raise ValueError("norm_stats.actions must include q01 and q99 for quantile action unnormalize")
 
     logging.info(
         "Loading PaliGemma tokenizer (first run may download from gs://big_vision/..., can take minutes)..."
@@ -277,7 +318,10 @@ def eval_libero(args: Args) -> None:
                         dummy_f = np.zeros_like(img_f, dtype=np.float32)
 
                         raw8 = _build_raw_state_8(obs)
-                        normed32 = _normalize_state_pad_32(raw8, state_mean, state_std)
+                        if args.use_quantile_norm:
+                            normed32 = _normalize_state_quantile_pad_32(raw8, state_q01, state_q99)
+                        else:
+                            normed32 = _normalize_state_zscore_pad_32(raw8, state_mean, state_std)
                         prompt_tokens = _tokenize_prompt(
                             tokenizer,
                             str(task_description),
@@ -308,9 +352,12 @@ def eval_libero(args: Args) -> None:
                         raw_actions = _extract_raw_actions(result)
                         action_chunk = _postprocess_actions(
                             raw_actions,
-                            action_mean,
-                            action_std,
                             do_unnorm=args.unnormalize_actions,
+                            use_quantile=args.use_quantile_norm,
+                            action_mean=action_mean,
+                            action_std=action_std,
+                            action_q01=action_q01,
+                            action_q99=action_q99,
                         )
 
                         assert len(action_chunk) >= args.replan_steps, (
