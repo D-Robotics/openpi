@@ -95,7 +95,7 @@ class Args:
     max_token_len: int = MAX_TOKEN_LEN_DEFAULT
     discrete_state_in_prompt: bool = False
     use_quantile_norm: bool = True
-    preprocess: Literal["client", "server"] = "client"
+    preprocess: Literal["client", "server"] = "server"
 
 
 def _quat2axisangle(quat):
