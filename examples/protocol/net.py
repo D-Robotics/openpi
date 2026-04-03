@@ -56,8 +56,12 @@ class NetBase:
         if "prompt" in observation:
             language = input_msg.languages.add()
             language.dtype = dtypes["prompt"]
-            language.shape.extend(observation["prompt"].shape)
-            language.data = observation["prompt"].tobytes()
+            p = observation["prompt"]
+            if dtypes["prompt"] == msg_pb2.Tensor.STRING and isinstance(p, str):
+                language.data = p.encode("utf-8")
+            else:
+                language.shape.extend(np.asarray(p).shape)
+                language.data = np.asarray(p).tobytes()
 
         # 添加状态Tensor
         if "state" in observation:

@@ -1,13 +1,20 @@
 """Libero evaluation using TCP+Protobuf protocol.
 
-Client-side preprocessing for inference server:
-  - Images: float32 NCHW (1,3,224,224), resize_with_pad, values in [-1, 1].
-  - Prompt: int32 PaliGemma tokens, shape (1, max_token_len), default (1, 200).
-  - State: matches openpi pi05 policy — by default quantile norm on 8-d state (q01/q99 -> ~[-1,1]),
-    then zero-pad to 32 (same as PadStatesAndActions), float32, shape (1, 32).
+Two payload modes (--preprocess {client,server}):
 
-Post-processing: optional action unnormalize (quantile by default, same as openpi Unnormalize) + slice to 7-D.
-Use --no-use-quantile-norm for mean/std z-score (legacy). --no-unnormalize-actions if server returns physical actions.
+  client (default): This process does pre/post like openpi pi05 websocket path.
+    - Images: float32 NCHW (1,3,224,224), resize_with_pad, values in [-1, 1].
+    - Prompt: int32 PaliGemma tokens, shape (1, max_token_len).
+    - State: quantile (or z-score) norm on 8-d, zero-pad to 32, float64 (1, 32) on wire.
+    - Post: optional action unnormalize + slice to 7-D.
+
+  server: Remote does tokenize / norm / pad / action denorm; this side sends raw-ish tensors.
+    - Images: uint8 NCHW (1,3,224,224), resize_with_pad only (no [-1,1] scaling).
+    - Prompt: UTF-8 task language string (protobuf STRING).
+    - State: raw 8-d Libero state, float64, shape (1, 8), no padding.
+    - Post: usually --no-unnormalize-actions if the server already returns env actions.
+
+Use --no-use-quantile-norm for z-score state/actions in client mode only.
 
 Openpi PadStatesAndActions: pad_to_dim(..., value=0.0) — padded state dimensions are zeros.
 """
@@ -21,6 +28,7 @@ import logging
 import math
 import pathlib
 import sys
+from typing import Literal
 
 import imageio
 from libero.libero import benchmark
@@ -50,10 +58,16 @@ MODEL_STATE_DIM = 32
 MAX_TOKEN_LEN_DEFAULT = 200
 IMAGE_SIZE_DEFAULT = 224
 
-DTYPES = {
+DTYPES_CLIENT = {
     "images": msg_pb2.Tensor.FLOAT32,
     "prompt": msg_pb2.Tensor.INT32,
-    "state": msg_pb2.Tensor.FLOAT32,
+    "state": msg_pb2.Tensor.FLOAT64,
+}
+
+DTYPES_SERVER = {
+    "images": msg_pb2.Tensor.UINT8,
+    "prompt": msg_pb2.Tensor.STRING,
+    "state": msg_pb2.Tensor.FLOAT64,
 }
 
 
@@ -81,6 +95,7 @@ class Args:
     max_token_len: int = MAX_TOKEN_LEN_DEFAULT
     discrete_state_in_prompt: bool = False
     use_quantile_norm: bool = True
+    preprocess: Literal["client", "server"] = "client"
 
 
 def _quat2axisangle(quat):
@@ -132,7 +147,7 @@ def _normalize_state_quantile_pad_32(raw8: np.ndarray, q01: np.ndarray, q99: np.
 
 
 def _state_tensor_for_server(normed32: np.ndarray) -> np.ndarray:
-    return np.ascontiguousarray(normed32.astype(np.float32).reshape(1, MODEL_STATE_DIM))
+    return np.ascontiguousarray(normed32.astype(np.float64).reshape(1, MODEL_STATE_DIM))
 
 
 def _preprocess_image_server(raw_hwc_u8: np.ndarray, size: int) -> np.ndarray:
@@ -140,6 +155,17 @@ def _preprocess_image_server(raw_hwc_u8: np.ndarray, size: int) -> np.ndarray:
     x = x.astype(np.float32) / 255.0 * 2.0 - 1.0
     chw = np.ascontiguousarray(np.transpose(x, (2, 0, 1)))
     return np.expand_dims(chw, axis=0)
+
+
+def _preprocess_image_server_uint8_nchw(raw_hwc_u8: np.ndarray, size: int) -> np.ndarray:
+    """Resize+pad only; uint8 NCHW (1,3,H,W) for remote preprocessing."""
+    x = image_tools.convert_to_uint8(image_tools.resize_with_pad(raw_hwc_u8, size, size))
+    chw = np.ascontiguousarray(np.transpose(x, (2, 0, 1)))
+    return np.expand_dims(chw, axis=0).astype(np.uint8)
+
+
+def _state_tensor_raw8_for_server(raw8: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(raw8.astype(np.float64).reshape(1, LIBERO_STATE_RAW_DIM))
 
 
 def _preprocess_image_replay(raw_hwc_u8: np.ndarray, size: int) -> np.ndarray:
@@ -252,22 +278,28 @@ def eval_libero(args: Args) -> None:
     state_mean, state_std, state_q01, state_q99 = _load_norm_stats_entry(str(stats_path), "state")
     action_mean, action_std, action_q01, action_q99 = _load_norm_stats_entry(str(stats_path), "actions")
     logging.info(f"Loaded norm_stats from {stats_path}")
-    if args.use_quantile_norm:
+    logging.info(f"Protocol preprocess mode: {args.preprocess!r} (client=tokenize+norm here; server=raw images, str prompt, 8-d state)")
+    if args.preprocess == "server" and args.discrete_state_in_prompt:
+        logging.warning("discrete_state_in_prompt is ignored in server preprocess mode (prompt is plain text).")
+
+    if args.use_quantile_norm and args.preprocess == "client":
         if state_q01 is None or state_q99 is None:
-            raise ValueError("norm_stats.state must include q01 and q99 for --use-quantile-norm (default)")
-        logging.info("State/action normalize: quantile (pi05-style)")
-    else:
-        logging.info("State/action normalize: z-score (mean/std)")
+            raise ValueError("norm_stats.state must include q01 and q99 for --use-quantile-norm (default) in client mode")
+        logging.info("State normalize (client): quantile (pi05-style)")
+    elif args.preprocess == "client":
+        logging.info("State normalize (client): z-score (mean/std)")
 
     if args.unnormalize_actions and args.use_quantile_norm:
         if action_q01 is None or action_q99 is None:
             raise ValueError("norm_stats.actions must include q01 and q99 for quantile action unnormalize")
 
-    logging.info(
-        "Loading PaliGemma tokenizer (first run may download from gs://big_vision/..., can take minutes)..."
-    )
-    tokenizer = _pali_tokenizer_mod.PaligemmaTokenizer(max_len=args.max_token_len)
-    logging.info("Tokenizer ready.")
+    tokenizer: _pali_tokenizer_mod.PaligemmaTokenizer | None = None
+    if args.preprocess == "client":
+        logging.info(
+            "Loading PaliGemma tokenizer (first run may download from gs://big_vision/..., can take minutes)..."
+        )
+        tokenizer = _pali_tokenizer_mod.PaligemmaTokenizer(max_len=args.max_token_len)
+        logging.info("Tokenizer ready.")
 
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[args.task_suite_name]()
@@ -313,23 +345,32 @@ def eval_libero(args: Args) -> None:
                     replay_images.append(_preprocess_image_replay(raw_img, args.image_size))
 
                     if not action_plan:
-                        img_f = _preprocess_image_server(raw_img, args.image_size)
-                        wrist_f = _preprocess_image_server(raw_wrist, args.image_size)
-                        dummy_f = np.zeros_like(img_f, dtype=np.float32)
-
                         raw8 = _build_raw_state_8(obs)
-                        if args.use_quantile_norm:
-                            normed32 = _normalize_state_quantile_pad_32(raw8, state_q01, state_q99)
+                        if args.preprocess == "client":
+                            assert tokenizer is not None
+                            img_f = _preprocess_image_server(raw_img, args.image_size)
+                            wrist_f = _preprocess_image_server(raw_wrist, args.image_size)
+                            dummy_f = np.zeros_like(img_f, dtype=np.float32)
+                            if args.use_quantile_norm:
+                                normed32 = _normalize_state_quantile_pad_32(raw8, state_q01, state_q99)
+                            else:
+                                normed32 = _normalize_state_zscore_pad_32(raw8, state_mean, state_std)
+                            prompt_out = _tokenize_prompt(
+                                tokenizer,
+                                str(task_description),
+                                args.max_token_len,
+                                discrete_state=args.discrete_state_in_prompt,
+                                normed_state_32=normed32,
+                            )
+                            state_send = _state_tensor_for_server(normed32)
+                            dtypes_send = DTYPES_CLIENT
                         else:
-                            normed32 = _normalize_state_zscore_pad_32(raw8, state_mean, state_std)
-                        prompt_tokens = _tokenize_prompt(
-                            tokenizer,
-                            str(task_description),
-                            args.max_token_len,
-                            discrete_state=args.discrete_state_in_prompt,
-                            normed_state_32=normed32,
-                        )
-                        state_send = _state_tensor_for_server(normed32)
+                            img_f = _preprocess_image_server_uint8_nchw(raw_img, args.image_size)
+                            wrist_f = _preprocess_image_server_uint8_nchw(raw_wrist, args.image_size)
+                            dummy_f = np.zeros_like(img_f, dtype=np.uint8)
+                            prompt_out = str(task_description).strip()
+                            state_send = _state_tensor_raw8_for_server(raw8)
+                            dtypes_send = DTYPES_SERVER
 
                         observation = {
                             "images": {
@@ -337,11 +378,11 @@ def eval_libero(args: Args) -> None:
                                 "cam_left_wrist": wrist_f,
                                 "cam_right_wrist": dummy_f,
                             },
-                            "prompt": prompt_tokens,
+                            "prompt": prompt_out,
                             "state": state_send,
                         }
 
-                        server.send(observation, DTYPES, reset=is_first_infer)
+                        server.send(observation, dtypes_send, reset=is_first_infer)
                         is_first_infer = False
 
                         result = server.receive()
