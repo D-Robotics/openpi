@@ -3,13 +3,13 @@
 Two payload modes (--preprocess {client,server}):
 
   client (default): This process does pre/post like openpi pi05 websocket path.
-    - Images: float32 NCHW (1,3,224,224), resize_with_pad, values in [-1, 1].
+    - Images: float32 NCHW (1,3,320,320), resize_with_pad, values in [-1, 1].
     - Prompt: int32 PaliGemma tokens, shape (1, max_token_len).
     - State: quantile (or z-score) norm on 8-d, zero-pad to 32, float64 (1, 32) on wire.
     - Post: optional action unnormalize + slice to 7-D.
 
-  server: Remote does tokenize / norm / pad / action denorm; this side sends raw-ish tensors.
-    - Images: uint8 NCHW (1,3,224,224), resize_with_pad only (no [-1,1] scaling).
+  server (not support): Remote does tokenize / norm / pad / action denorm; this side sends raw-ish tensors.
+    - Images: uint8 NCHW (1,3,320,320), resize_with_pad only (no [-1,1] scaling).
     - Prompt: UTF-8 task language string (protobuf STRING).
     - State: raw 8-d Libero state, float64, shape (1, 8), no padding.
     - Post: usually --no-unnormalize-actions if the server already returns env actions.
@@ -52,11 +52,11 @@ from net import Server
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
 LIBERO_ACTION_DIM = 7
-LIBERO_ACTION_HORIZON = 10
+LIBERO_ACTION_HORIZON = 50
 LIBERO_STATE_RAW_DIM = 8
 MODEL_STATE_DIM = 32
 MAX_TOKEN_LEN_DEFAULT = 200
-IMAGE_SIZE_DEFAULT = 224
+IMAGE_SIZE_DEFAULT = 320
 
 DTYPES_CLIENT = {
     "images": msg_pb2.Tensor.FLOAT32,
@@ -77,18 +77,18 @@ def _default_norm_stats_path() -> str:
 
 @dataclasses.dataclass
 class Args:
-    host: str = "0.0.0.0"
-    port: int = 8888
-    replan_steps: int = 5
+    host: str = "10.64.86.13"
+    port: int = 30006
+    replan_steps: int = 5  # n_action_steps
 
-    task_suite_name: str = "libero_spatial"
+    task_suite_name: str = "libero_goal" # libero_spatial libero_object libero_goal libero_10
     num_steps_wait: int = 10
-    num_trials_per_task: int = 50
+    num_trials_per_task: int = 5  # default 50
 
-    video_out_path: str = "data/libero/videos"
+    video_out_path: str = "data/libero/videos/libero_goal_5step"
     seed: int = 7
 
-    unnormalize_actions: bool = True
+    unnormalize_actions: bool = False
     norm_stats_path: str = dataclasses.field(default_factory=_default_norm_stats_path)
 
     image_size: int = IMAGE_SIZE_DEFAULT
@@ -424,7 +424,7 @@ def eval_libero(args: Args) -> None:
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
             imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
+                pathlib.Path(args.video_out_path) / f"{suffix}_rollout_{task_segment}_ep{task_episodes}.mp4", 
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )

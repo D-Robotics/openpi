@@ -78,8 +78,7 @@ class NetBase:
                 data_len = len(serialized_data)
 
                 # 2. 关键：长度字段按“大端字节序”打包（与 C++ 网络序一致）
-                net_len = socket.htonl(data_len)  # 主机序→网络序（大端）
-                net_len_bytes = struct.pack("<I", net_len)  # 大端打包为 4 字节
+                net_len_bytes = struct.pack(">I", data_len)  # 大端打包为 4 字节
                 # 验证长度字段是否为 4 字节（必须满足）
                 assert len(net_len_bytes) == 4, f"长度字段应为4字节，实际{len(net_len_bytes)}字节"
 
@@ -116,9 +115,7 @@ class NetBase:
                     return False
 
                 # 关键：用 ">I"（大端）解析 4 字节无符号整数（与 C++ 的 htonl 对应）
-                net_len = struct.unpack("<I", net_len_data)[0]
-                # 网络序转主机序（若系统是小端，此步必须；大端系统可省略，但建议保留兼容性）
-                data_len = socket.ntohl(net_len)
+                data_len = struct.unpack(">I", net_len_data)[0]
 
                 # 接收数据
                 serialized_data = b""
