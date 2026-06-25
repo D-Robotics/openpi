@@ -2,13 +2,13 @@
 
 Two payload modes (--preprocess {client,server}):
 
-  client (default): This process does pre/post like openpi pi05 websocket path.
+  client: This process does pre/post like openpi pi05 websocket path.
     - Images: float32 NCHW (1,3,320,320), resize_with_pad, values in [-1, 1].
     - Prompt: int32 PaliGemma tokens, shape (1, max_token_len).
     - State: quantile (or z-score) norm on 8-d, zero-pad to 32, float64 (1, 32) on wire.
     - Post: optional action unnormalize + slice to 7-D.
 
-  server (not support): Remote does tokenize / norm / pad / action denorm; this side sends raw-ish tensors.
+  server: Remote does tokenize / norm / pad / action denorm; this side sends raw-ish tensors.
     - Images: uint8 NCHW (1,3,320,320), resize_with_pad only (no [-1,1] scaling).
     - Prompt: UTF-8 task language string (protobuf STRING).
     - State: raw 8-d Libero state, float64, shape (1, 8), no padding.
@@ -81,11 +81,11 @@ class Args:
     port: int = 30006
     replan_steps: int = 5  # n_action_steps
 
-    task_suite_name: str = "libero_goal" # libero_spatial libero_object libero_goal libero_10
+    task_suite_name: str = "libero_10" # libero_spatial libero_object libero_goal libero_10
     num_steps_wait: int = 10
     num_trials_per_task: int = 5  # default 50
 
-    video_out_path: str = "data/libero/videos/libero_goal_5step"
+    video_out_path: str = "data/libero/videos/libero_10_5step"
     seed: int = 7
 
     unnormalize_actions: bool = False
