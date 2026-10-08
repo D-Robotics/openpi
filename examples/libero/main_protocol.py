@@ -3,13 +3,13 @@
 Two payload modes (--preprocess {client,server}):
 
   client: This process does pre/post like openpi pi05 websocket path.
-    - Images: float32 NCHW (1,3,320,320), resize_with_pad, values in [-1, 1].
+    - Images: float32 NCHW (1,3,512,512), resize_with_pad, values in [-1, 1].
     - Prompt: int32 PaliGemma tokens, shape (1, max_token_len).
     - State: quantile (or z-score) norm on 8-d, zero-pad to 32, float64 (1, 32) on wire.
     - Post: optional action unnormalize + slice to 7-D.
 
   server: Remote does tokenize / norm / pad / action denorm; this side sends raw-ish tensors.
-    - Images: uint8 NCHW (1,3,320,320), resize_with_pad only (no [-1,1] scaling).
+    - Images: uint8 NCHW (1,3,512,512), resize_with_pad only (no [-1,1] scaling).
     - Prompt: UTF-8 task language string (protobuf STRING).
     - State: raw 8-d Libero state, float64, shape (1, 8), no padding.
     - Post: usually --no-unnormalize-actions if the server already returns env actions.
@@ -56,7 +56,7 @@ LIBERO_ACTION_HORIZON = 50
 LIBERO_STATE_RAW_DIM = 8
 MODEL_STATE_DIM = 32
 MAX_TOKEN_LEN_DEFAULT = 200
-IMAGE_SIZE_DEFAULT = 320
+IMAGE_SIZE_DEFAULT = 512
 
 DTYPES_CLIENT = {
     "images": msg_pb2.Tensor.FLOAT32,
@@ -81,11 +81,11 @@ class Args:
     port: int = 30006
     replan_steps: int = 5  # n_action_steps
 
-    task_suite_name: str = "libero_10" # libero_spatial libero_object libero_goal libero_10
+    task_suite_name: str = "libero_spatial" # libero_spatial libero_object libero_goal libero_10
     num_steps_wait: int = 10
     num_trials_per_task: int = 5  # default 50
 
-    video_out_path: str = "data/libero/videos/libero_10_5step"
+    video_out_path: str = "data/libero/videos/libero_spatial_5step"
     seed: int = 7
 
     unnormalize_actions: bool = False
@@ -350,7 +350,6 @@ def eval_libero(args: Args) -> None:
                             assert tokenizer is not None
                             img_f = _preprocess_image_server(raw_img, args.image_size)
                             wrist_f = _preprocess_image_server(raw_wrist, args.image_size)
-                            dummy_f = np.zeros_like(img_f, dtype=np.float32)
                             if args.use_quantile_norm:
                                 normed32 = _normalize_state_quantile_pad_32(raw8, state_q01, state_q99)
                             else:
@@ -367,7 +366,6 @@ def eval_libero(args: Args) -> None:
                         else:
                             img_f = _preprocess_image_server_uint8_nchw(raw_img, args.image_size)
                             wrist_f = _preprocess_image_server_uint8_nchw(raw_wrist, args.image_size)
-                            dummy_f = np.zeros_like(img_f, dtype=np.uint8)
                             prompt_out = str(task_description).strip()
                             state_send = _state_tensor_raw8_for_server(raw8)
                             dtypes_send = DTYPES_SERVER
@@ -376,7 +374,6 @@ def eval_libero(args: Args) -> None:
                             "images": {
                                 "cam_high": img_f,
                                 "cam_left_wrist": wrist_f,
-                                "cam_right_wrist": dummy_f,
                             },
                             "prompt": prompt_out,
                             "state": state_send,
