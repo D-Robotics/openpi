@@ -77,8 +77,8 @@ def _default_norm_stats_path() -> str:
 
 @dataclasses.dataclass
 class Args:
-    host: str = "10.64.86.13"
-    port: int = 30006
+    host: str = "10.64.86.13"  # board ip
+    port: int = 30005
     replan_steps: int = 5  # n_action_steps
 
     task_suite_name: str = "libero_spatial" # libero_spatial libero_object libero_goal libero_10
