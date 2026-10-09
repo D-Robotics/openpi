@@ -249,7 +249,7 @@ def _postprocess_actions(
 
 def _get_max_steps(task_suite_name: str) -> int:
     limits = {
-        "libero_spatial": 220,
+        "libero_spatial": 280,
         "libero_object": 280,
         "libero_goal": 300,
         "libero_10": 520,
